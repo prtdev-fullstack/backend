@@ -24,13 +24,17 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 app = FastAPI(title="BantuDoc API")
 
 # =========================
-# CORS (PRODUCTION SAFE)
+# CORS (FIX FINAL)
 # =========================
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # En production (Render)
-    allow_credentials=True,
+    allow_origins=[
+        "https://bantu-doc.vercel.app/",
+        "http://localhost:5173",
+        "http://localhost:3000",
+    ],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -64,32 +68,26 @@ async def convert_pdf_to_docx(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...)
 ):
-    # Vérification type
     if file.content_type != "application/pdf":
         return JSONResponse(
             status_code=400,
             content={"error": "Le fichier doit être un PDF"}
         )
 
-    # Lecture du fichier
     contents = await file.read()
 
-    # Vérification taille (10 Mo max)
     if len(contents) > 10 * 1024 * 1024:
         return JSONResponse(
             status_code=400,
             content={"error": "Le fichier est trop volumineux (max 10 Mo)"}
         )
 
-    # Noms temporaires
     input_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4()}.pdf")
     output_path = os.path.join(OUTPUT_DIR, f"{uuid.uuid4()}.docx")
 
-    # Sauvegarde PDF
     with open(input_path, "wb") as f:
         f.write(contents)
 
-    # Conversion
     try:
         cv = Converter(input_path)
         cv.convert(output_path)
@@ -101,10 +99,8 @@ async def convert_pdf_to_docx(
             content={"error": f"Erreur de conversion : {str(e)}"}
         )
 
-    # Nettoyage automatique après envoi
     background_tasks.add_task(cleanup_files, input_path, output_path)
 
-    # Envoi du DOCX
     return FileResponse(
         path=output_path,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
