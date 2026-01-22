@@ -145,19 +145,19 @@ async def convert_docx_to_pdf(
     try:
         # ✅ LibreOffice headless (Linux/Render compatible)
         subprocess.run(
-            [
-                "libreoffice",
-                "--headless",
-                "--convert-to",
-                "pdf",
-                "--outdir",
-                OUTPUT_DIR,
-                input_path,
-            ],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+    [
+        "libreoffice",
+        "--headless",
+        "--convert-to",
+        "pdf:writer_pdf_Export",
+        "--outdir",
+        OUTPUT_DIR,
+        input_path,
+    ],
+    check=True,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+)
 
         # LibreOffice générera un PDF avec le même nom que input_path
         generated_pdf = os.path.join(
