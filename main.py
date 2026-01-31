@@ -2,6 +2,7 @@ from fastapi import FastAPI, UploadFile, File, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pdf2docx import Converter
+from PIL import Image, ImageOps
 import os
 import uuid
 import subprocess
@@ -25,7 +26,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 app = FastAPI(title="BantuDoc API")
 
 # =========================
-# CORS (VERCEL + LOCAL + DOMAIN)
+# CORS
 # =========================
 
 app.add_middleware(
@@ -69,18 +70,11 @@ async def convert_pdf_to_docx(
     file: UploadFile = File(...)
 ):
     if file.content_type != "application/pdf":
-        return JSONResponse(
-            status_code=400,
-            content={"error": "Le fichier doit être un PDF"}
-        )
+        return JSONResponse(status_code=400, content={"error": "Le fichier doit être un PDF"})
 
     contents = await file.read()
-
     if len(contents) > 10 * 1024 * 1024:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "Fichier trop volumineux (10 Mo max)"}
-        )
+        return JSONResponse(status_code=400, content={"error": "Fichier trop volumineux (10 Mo max)"})
 
     input_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4()}.pdf")
     output_path = os.path.join(OUTPUT_DIR, f"{uuid.uuid4()}.docx")
@@ -94,10 +88,7 @@ async def convert_pdf_to_docx(
         cv.close()
     except Exception as e:
         cleanup_files(input_path)
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(e)}
-        )
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
     background_tasks.add_task(cleanup_files, input_path, output_path)
 
@@ -108,7 +99,7 @@ async def convert_pdf_to_docx(
     )
 
 # =========================
-# DOCX → PDF (PRODUCTION SAFE)
+# DOCX → PDF (LIBREOFFICE)
 # =========================
 
 @app.post("/convert/docx-to-pdf")
@@ -118,23 +109,16 @@ async def convert_docx_to_pdf(
     file: UploadFile = File(...)
 ):
     allowed_types = [
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # docx
-        "application/msword"  # doc
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/msword",
     ]
 
     if file.content_type not in allowed_types:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "Le fichier doit être un document Word (.docx ou .doc)"}
-        )
+        return JSONResponse(status_code=400, content={"error": "Le fichier doit être Word (.docx ou .doc)"})
 
     contents = await file.read()
-
     if len(contents) > 10 * 1024 * 1024:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "Fichier trop volumineux (10 Mo max)"}
-        )
+        return JSONResponse(status_code=400, content={"error": "Fichier trop volumineux (10 Mo max)"})
 
     input_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4()}.docx")
     output_path = os.path.join(OUTPUT_DIR, f"{uuid.uuid4()}.pdf")
@@ -143,23 +127,21 @@ async def convert_docx_to_pdf(
         f.write(contents)
 
     try:
-        # ✅ LibreOffice headless (Linux/Render compatible)
         subprocess.run(
-    [
-        "libreoffice",
-        "--headless",
-        "--convert-to",
-        "pdf:writer_pdf_Export",
-        "--outdir",
-        OUTPUT_DIR,
-        input_path,
-    ],
-    check=True,
-    stdout=subprocess.PIPE,
-    stderr=subprocess.PIPE,
-)
+            [
+                "libreoffice",
+                "--headless",
+                "--convert-to",
+                "pdf:writer_pdf_Export",
+                "--outdir",
+                OUTPUT_DIR,
+                input_path,
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
 
-        # LibreOffice générera un PDF avec le même nom que input_path
         generated_pdf = os.path.join(
             OUTPUT_DIR,
             os.path.splitext(os.path.basename(input_path))[0] + ".pdf"
@@ -168,23 +150,73 @@ async def convert_docx_to_pdf(
         if os.path.exists(generated_pdf):
             os.rename(generated_pdf, output_path)
         else:
-            raise Exception("Conversion échouée : PDF non généré")
+            raise Exception("PDF non généré")
 
-    except subprocess.CalledProcessError as e:
-        cleanup_files(input_path)
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": "Erreur conversion Word → PDF",
-                "details": e.stderr.decode(errors="ignore"),
-            },
-        )
     except Exception as e:
         cleanup_files(input_path)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+    background_tasks.add_task(cleanup_files, input_path, output_path)
+
+    return FileResponse(
+        output_path,
+        media_type="application/pdf",
+        filename=file.filename.rsplit(".", 1)[0] + ".pdf",
+    )
+
+# =========================
+# IMAGE → PDF (HAUTE QUALITÉ A4)
+# =========================
+
+@app.post("/convert/image-to-pdf")
+@app.post("/convert/image-to-pdf/")
+async def convert_image_to_pdf(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...)
+):
+    allowed_types = ["image/png", "image/jpeg", "image/jpg", "image/webp"]
+
+    if file.content_type not in allowed_types:
         return JSONResponse(
-            status_code=500,
-            content={"error": str(e)}
+            status_code=400,
+            content={"error": "Le fichier doit être une image (PNG, JPG, WebP)"}
         )
+
+    contents = await file.read()
+    if len(contents) > 10 * 1024 * 1024:
+        return JSONResponse(status_code=400, content={"error": "Image trop volumineuse (10 Mo max)"})
+
+    extension = file.filename.split(".")[-1].lower()
+    input_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4()}.{extension}")
+    output_path = os.path.join(OUTPUT_DIR, f"{uuid.uuid4()}.pdf")
+
+    with open(input_path, "wb") as f:
+        f.write(contents)
+
+    try:
+        # Dimensions A4 en pixels à 300 DPI
+        A4_WIDTH = 2480
+        A4_HEIGHT = 3508
+
+        image = Image.open(input_path)
+
+        if image.mode in ("RGBA", "P"):
+            image = image.convert("RGB")
+
+        # Adapter à une page A4 sans déformation
+        image = ImageOps.contain(image, (A4_WIDTH, A4_HEIGHT))
+
+        image.save(
+            output_path,
+            "PDF",
+            resolution=300.0,
+            quality=100,
+            subsampling=0
+        )
+
+    except Exception as e:
+        cleanup_files(input_path)
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
     background_tasks.add_task(cleanup_files, input_path, output_path)
 
